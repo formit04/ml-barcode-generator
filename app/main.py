@@ -2,7 +2,7 @@ import os
 import uuid
 import tempfile
 from fastapi import FastAPI, UploadFile, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from app.pdf_parser import parse_pdf, PageType
 from app.pdf_overlay import add_barcodes_to_pdf
@@ -18,7 +18,12 @@ def health():
     return {"status": "ok"}
 
 
-@app.post("/process")
+@app.get("/barcode")
+def barcode_redirect():
+    return RedirectResponse(url="/barcode/", status_code=301)
+
+
+@app.post("/barcode/process")
 async def process_pdf(file: UploadFile):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="El archivo debe ser un PDF")
@@ -64,7 +69,7 @@ async def process_pdf(file: UploadFile):
             os.unlink(input_path)
 
 
-@app.get("/download/{file_id}")
+@app.get("/barcode/download/{file_id}")
 def download_pdf(file_id: str):
     if file_id not in processed_files:
         raise HTTPException(status_code=404, detail="Archivo no encontrado")
@@ -87,4 +92,4 @@ def download_pdf(file_id: str):
     )
 
 
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+app.mount("/barcode", StaticFiles(directory="static", html=True), name="static")

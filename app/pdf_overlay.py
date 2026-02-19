@@ -1,13 +1,18 @@
 import io
+from pdfrw import PdfReader as PdfrwReader
+from pdfrw.buildxobj import pagexobj
+from pdfrw.toreportlab import makerl
 from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
-from PyPDF2 import PdfReader, PdfWriter
-from app.barcode_gen import generate_barcode_image
+from reportlab.graphics.barcode.code128 import Code128
 from app.pdf_parser import LabelInfo
 
 
 def add_barcodes_to_pdf(pdf_path: str, labels: list[LabelInfo]) -> bytes:
     """Add Code 128 barcodes to a Mercado Libre shipping label PDF.
+
+    Uses pdfrw to embed each original page as a Form XObject, then draws
+    barcodes on top using reportlab. This avoids the merge_page approach
+    which can make overlaid content invisible.
 
     Args:
         pdf_path: Path to the original PDF.
@@ -16,50 +21,62 @@ def add_barcodes_to_pdf(pdf_path: str, labels: list[LabelInfo]) -> bytes:
     Returns:
         Modified PDF as bytes.
     """
-    reader = PdfReader(pdf_path)
-    writer = PdfWriter()
+    reader = PdfrwReader(pdf_path)
 
     # Group labels by page number
     labels_by_page: dict[int, list[LabelInfo]] = {}
     for label in labels:
         labels_by_page.setdefault(label.page_number, []).append(label)
 
+    output = io.BytesIO()
+
+    # Use first page dimensions as default; each page will use its own
+    first_mb = reader.pages[0].MediaBox
+    default_w = float(first_mb[2]) - float(first_mb[0])
+    default_h = float(first_mb[3]) - float(first_mb[1])
+
+    c = canvas.Canvas(output, pagesize=(default_w, default_h))
+
     for page_idx, page in enumerate(reader.pages):
+        # Get this page's dimensions
+        mb = page.MediaBox
+        pw = float(mb[2]) - float(mb[0])
+        ph = float(mb[3]) - float(mb[1])
+        c.setPageSize((pw, ph))
+
+        # Draw original page content as Form XObject
+        xobj = pagexobj(page)
+        rl_obj = makerl(c, xobj)
+        c.saveState()
+        c.doForm(rl_obj)
+        c.restoreState()
+
+        # Draw barcodes for this page
         page_labels = labels_by_page.get(page_idx, [])
-
-        if not page_labels:
-            writer.add_page(page)
-            continue
-
-        media_box = page.mediabox
-        page_width = float(media_box.width)
-        page_height = float(media_box.height)
-
-        # Create overlay with barcodes
-        overlay_buffer = io.BytesIO()
-        c = canvas.Canvas(overlay_buffer, pagesize=(page_width, page_height))
-
         for label in page_labels:
-            barcode_png = generate_barcode_image(label.pack_id)
-            barcode_img = ImageReader(io.BytesIO(barcode_png))
-
-            bc_width = 170
-            bc_height = 28
+            bc_height = 42
 
             # Convert from pdfplumber coords (y=0 at top) to reportlab (y=0 at bottom)
             x = label.barcode_x
-            y = page_height - label.barcode_y - bc_height
+            y = ph - label.barcode_y - bc_height
 
-            c.drawImage(barcode_img, x, y, width=bc_width, height=bc_height)
+            # White background behind barcode for clean scanning
+            c.setFillColorRGB(1, 1, 1)
+            c.rect(x - 2, y - 2, 204, bc_height + 4, fill=True, stroke=False)
 
-        c.save()
-        overlay_buffer.seek(0)
+            # Draw Code 128 barcode using reportlab's native vector renderer
+            c.setFillColorRGB(0, 0, 0)
+            c.setStrokeColorRGB(0, 0, 0)
+            barcode = Code128(
+                label.pack_id,
+                barWidth=0.8,
+                barHeight=30,
+                humanReadable=True,
+                fontSize=7,
+            )
+            barcode.drawOn(c, x, y)
 
-        overlay_reader = PdfReader(overlay_buffer)
-        overlay_page = overlay_reader.pages[0]
-        page.merge_page(overlay_page)
-        writer.add_page(page)
+        c.showPage()
 
-    output = io.BytesIO()
-    writer.write(output)
+    c.save()
     return output.getvalue()

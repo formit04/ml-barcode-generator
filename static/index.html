@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generador de Códigos de Barras ML</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .container {
+            max-width: 600px;
+            margin: 60px auto 0;
+            padding: 0 20px;
+            flex: 1;
+        }
+        h1 { text-align: center; font-size: 24px; margin-bottom: 8px; color: #1a1a1a; }
+        .subtitle { text-align: center; color: #666; font-size: 14px; margin-bottom: 40px; }
+        .drop-zone {
+            border: 2px dashed #ccc; border-radius: 12px; padding: 60px 20px;
+            text-align: center; cursor: pointer; transition: all 0.2s; background: #fff;
+        }
+        .drop-zone:hover, .drop-zone.dragover { border-color: #FFE600; background: #FFFDE7; }
+        .drop-zone.has-file { border-color: #4CAF50; background: #F1F8E9; }
+        .drop-zone p { font-size: 16px; color: #666; }
+        .drop-zone .filename { font-weight: 600; color: #333; margin-top: 8px; }
+        .drop-zone input { display: none; }
+        .btn {
+            display: block; width: 100%; padding: 14px; border: none; border-radius: 8px;
+            font-size: 16px; font-weight: 600; cursor: pointer; margin-top: 16px; transition: all 0.2s;
+        }
+        .btn-process { background: #FFE600; color: #1a1a1a; }
+        .btn-process:hover { background: #FFD600; }
+        .btn-process:disabled { background: #e0e0e0; color: #999; cursor: not-allowed; }
+        .btn-download { background: #4CAF50; color: #fff; text-decoration: none; text-align: center; }
+        .btn-download:hover { background: #43A047; }
+        .status {
+            margin-top: 20px; padding: 16px; border-radius: 8px;
+            background: #fff; border: 1px solid #e0e0e0; display: none;
+        }
+        .status.visible { display: block; }
+        .status h3 { font-size: 14px; margin-bottom: 8px; }
+        .status ul { list-style: none; font-size: 13px; color: #555; }
+        .status ul li { padding: 2px 0; }
+        .status ul li::before { content: "\2022 "; color: #999; }
+        .spinner {
+            display: inline-block; width: 18px; height: 18px;
+            border: 2px solid #ccc; border-top-color: #333; border-radius: 50%;
+            animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 8px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .error { color: #d32f2f; background: #FFEBEE; border-color: #FFCDD2; }
+        footer {
+            text-align: center; padding: 24px; font-size: 12px; color: #999;
+        }
+        footer a { color: #999; text-decoration: none; }
+        footer a:hover { color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Generador de Códigos de Barras</h1>
+        <p class="subtitle">Agrega códigos de barras a tus etiquetas de Mercado Libre</p>
+
+        <div class="drop-zone" id="dropZone">
+            <p id="dropText">Arrastra tu PDF aquí<br>o haz clic para seleccionar</p>
+            <p class="filename" id="fileName" style="display:none"></p>
+            <input type="file" id="fileInput" accept=".pdf">
+        </div>
+
+        <button class="btn btn-process" id="processBtn" disabled>Procesar PDF</button>
+
+        <div class="status" id="status"></div>
+
+        <a class="btn btn-download" id="downloadBtn" style="display:none">
+            Descargar PDF con códigos de barras
+        </a>
+    </div>
+
+    <footer>
+        &copy; 2026 Codezuno. All rights reserved. &middot;
+        Crafted &amp; Designed &amp; Built with &hearts; by
+        <a href="https://codezuno.com" target="_blank">codezuno.com</a>
+    </footer>
+
+    <script>
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const dropText = document.getElementById('dropText');
+        const fileName = document.getElementById('fileName');
+        const processBtn = document.getElementById('processBtn');
+        const status = document.getElementById('status');
+        const downloadBtn = document.getElementById('downloadBtn');
+        let selectedFile = null;
+
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault(); dropZone.classList.remove('dragover');
+            const file = e.dataTransfer.files[0];
+            if (file && file.type === 'application/pdf') selectFile(file);
+        });
+        fileInput.addEventListener('change', (e) => { if (e.target.files[0]) selectFile(e.target.files[0]); });
+
+        function selectFile(file) {
+            selectedFile = file;
+            dropText.style.display = 'none';
+            fileName.style.display = 'block';
+            fileName.textContent = file.name;
+            dropZone.classList.add('has-file');
+            processBtn.disabled = false;
+            downloadBtn.style.display = 'none';
+            status.classList.remove('visible');
+        }
+
+        processBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+            processBtn.disabled = true;
+            downloadBtn.style.display = 'none';
+            status.className = 'status visible';
+            status.innerHTML = '<span class="spinner"></span> Procesando...';
+
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+
+            try {
+                const resp = await fetch('/process', { method: 'POST', body: formData });
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    throw new Error(err.detail || 'Error desconocido');
+                }
+                const data = await resp.json();
+
+                status.innerHTML = `
+                    <h3>Se procesaron ${data.total_labels} etiquetas</h3>
+                    <ul>
+                        <li>${data.stats.standard} etiquetas estándar Mercado Libre</li>
+                        ${data.stats.jt_express > 0 ? `<li>${data.stats.jt_express} etiquetas J&T Express</li>` : ''}
+                    </ul>`;
+
+                downloadBtn.href = '/download/' + data.file_id;
+                downloadBtn.style.display = 'block';
+            } catch (e) {
+                status.className = 'status visible error';
+                status.innerHTML = `<h3>Error</h3><p>${e.message}</p>`;
+            } finally {
+                processBtn.disabled = false;
+            }
+        });
+    </script>
+</body>
+</html>

@@ -3,6 +3,7 @@ import uuid
 import tempfile
 from fastapi import FastAPI, UploadFile, HTTPException
 from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 from app.pdf_parser import parse_pdf, PageType
 from app.pdf_overlay import add_barcodes_to_pdf
 
@@ -84,3 +85,6 @@ def download_pdf(file_id: str):
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{original_name}"'},
     )
+
+
+app.mount("/", StaticFiles(directory="static", html=True), name="static")

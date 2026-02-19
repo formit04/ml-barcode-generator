@@ -131,7 +131,7 @@
             formData.append('file', selectedFile);
 
             try {
-                const resp = await fetch('/process', { method: 'POST', body: formData });
+                const resp = await fetch('process', { method: 'POST', body: formData });
                 if (!resp.ok) {
                     const err = await resp.json();
                     throw new Error(err.detail || 'Error desconocido');
@@ -145,7 +145,7 @@
                         ${data.stats.jt_express > 0 ? `<li>${data.stats.jt_express} etiquetas J&T Express</li>` : ''}
                     </ul>`;
 
-                downloadBtn.href = '/download/' + data.file_id;
+                downloadBtn.href = 'download/' + data.file_id;
                 downloadBtn.style.display = 'block';
             } catch (e) {
                 status.className = 'status visible error';

@@ -35,6 +35,7 @@ class LabelInfo:
     page_type: PageType
     barcode_y: float      # y-coordinate for barcode (from page top, pdfplumber coords)
     barcode_x: float      # x-coordinate for barcode start
+    compact: bool = False # True when space is tight (agency labels) — use smaller barcode
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +270,49 @@ def _find_cp_line_y_jt(words: list[dict], x_min: float, x_max: float) -> float |
     return None
 
 
+def _has_agency_pickup(words: list[dict], x_min: float, x_max: float) -> float | None:
+    """Detect 'Comprador retira en AGENCIA MERCADO LIBRE' text in the column.
+
+    Returns the y-coordinate (top) of the agency text if found, else None.
+    This text appears around y=564 on standard labels where the buyer
+    picks up at a Mercado Libre agency.
+    """
+    for w in words:
+        text = w['text']
+        x0 = float(w['x0'])
+        top = float(w['top'])
+        if x0 < x_min or x0 > x_max:
+            continue
+        if text == 'AGENCIA' and 540 < top < 600:
+            return top
+    return None
+
+
+def _find_last_contact_line_y(words: list[dict], x_min: float, x_max: float) -> float | None:
+    """Find the bottom of the last contact info line for J&T Express labels.
+
+    J&T labels have contact info (name, address, CP, colonia, referencia)
+    typically between y=480-530. We find the bottom of the last such line
+    to place the barcode below it.
+    """
+    max_bottom = None
+    for w in words:
+        x0 = float(w['x0'])
+        top = float(w['top'])
+        bottom = float(w['bottom'])
+        text = w['text']
+        if x0 < x_min or x0 > x_max:
+            continue
+        # Contact section is typically between y=480-540 on J&T labels
+        if 480 < top < 540:
+            # Skip cut marks (single letter like "R", "C", "A")
+            if len(text) <= 1:
+                continue
+            if max_bottom is None or bottom > max_bottom:
+                max_bottom = bottom
+    return max_bottom
+
+
 def _has_product_panel(words: list[dict]) -> bool:
     """Detect if the page has a product panel on the right side.
 
@@ -355,12 +399,17 @@ def parse_pdf(pdf_path: str | Path) -> List[LabelInfo]:
             if is_two_col:
                 # Two-column page - process each side
                 for nid, x0, top in left_ids:
+                    compact = False
                     if has_jt_left:
                         ptype = PageType.JT_EXPRESS
-                        cp_y = _find_cp_line_y_jt(words, 0, midpoint)
+                        contact_y = _find_last_contact_line_y(words, 0, midpoint)
+                        cp_y = contact_y if contact_y else _find_cp_line_y_jt(words, 0, midpoint)
                     else:
                         ptype = PageType.STANDARD_2COL
                         cp_y = _find_cp_line_y(words, 0, midpoint)
+                        agency_y = _has_agency_pickup(words, 0, midpoint)
+                        if agency_y is not None:
+                            compact = True
 
                     barcode_y = (cp_y + _BARCODE_Y_OFFSET) if cp_y else 530.0
                     labels.append(LabelInfo(
@@ -370,6 +419,7 @@ def parse_pdf(pdf_path: str | Path) -> List[LabelInfo]:
                         page_type=ptype,
                         barcode_y=barcode_y,
                         barcode_x=_BARCODE_X_LEFT,
+                        compact=compact,
                     ))
 
                 for nid, x0, top in right_ids:
@@ -378,12 +428,17 @@ def parse_pdf(pdf_path: str | Path) -> List[LabelInfo]:
                     # the product strip header, not a second label)
                     if nid in seen_left:
                         continue
+                    compact = False
                     if has_jt_right:
                         ptype = PageType.JT_EXPRESS
-                        cp_y = _find_cp_line_y_jt(words, midpoint, page_width)
+                        contact_y = _find_last_contact_line_y(words, midpoint, page_width)
+                        cp_y = contact_y if contact_y else _find_cp_line_y_jt(words, midpoint, page_width)
                     else:
                         ptype = PageType.STANDARD_2COL
                         cp_y = _find_cp_line_y(words, midpoint, page_width)
+                        agency_y = _has_agency_pickup(words, midpoint, page_width)
+                        if agency_y is not None:
+                            compact = True
 
                     barcode_y = (cp_y + _BARCODE_Y_OFFSET) if cp_y else 530.0
                     labels.append(LabelInfo(
@@ -393,17 +448,23 @@ def parse_pdf(pdf_path: str | Path) -> List[LabelInfo]:
                         page_type=ptype,
                         barcode_y=barcode_y,
                         barcode_x=_BARCODE_X_RIGHT,
+                        compact=compact,
                     ))
 
             elif has_left:
                 # Single column - either 1-col, 1-col+products, or J&T full-width
                 nid = left_ids[0][0]
+                compact = False
 
                 if has_jt_any:
                     ptype = PageType.JT_EXPRESS
-                    cp_y_val = _find_cp_line_y(words, 0, midpoint)
-                    if cp_y_val is None:
-                        cp_y_val = _find_cp_line_y_jt(words, 0, page_width)
+                    contact_y = _find_last_contact_line_y(words, 0, midpoint)
+                    if contact_y:
+                        cp_y_val = contact_y
+                    else:
+                        cp_y_val = _find_cp_line_y(words, 0, midpoint)
+                        if cp_y_val is None:
+                            cp_y_val = _find_cp_line_y_jt(words, 0, page_width)
                 elif has_products:
                     ptype = PageType.STANDARD_1COL_PRODUCTS
                     cp_y_val = _find_cp_line_y(words, 0, midpoint)
@@ -419,6 +480,7 @@ def parse_pdf(pdf_path: str | Path) -> List[LabelInfo]:
                     page_type=ptype,
                     barcode_y=barcode_y,
                     barcode_x=_BARCODE_X_FULL,
+                    compact=compact,
                 ))
 
             elif has_right:

@@ -54,7 +54,20 @@ def add_barcodes_to_pdf(pdf_path: str, labels: list[LabelInfo]) -> bytes:
         # Draw barcodes for this page
         page_labels = labels_by_page.get(page_idx, [])
         for label in page_labels:
-            bc_height = 42
+            if label.compact:
+                # Compact barcode for tight spaces (agency labels)
+                bc_height = 28
+                bar_width = 0.65
+                bar_height = 18
+                font_size = 6
+                bg_width = 170
+            else:
+                # Standard barcode
+                bc_height = 42
+                bar_width = 0.8
+                bar_height = 30
+                font_size = 7
+                bg_width = 204
 
             # Convert from pdfplumber coords (y=0 at top) to reportlab (y=0 at bottom)
             x = label.barcode_x
@@ -62,17 +75,17 @@ def add_barcodes_to_pdf(pdf_path: str, labels: list[LabelInfo]) -> bytes:
 
             # White background behind barcode for clean scanning
             c.setFillColorRGB(1, 1, 1)
-            c.rect(x - 2, y - 2, 204, bc_height + 4, fill=True, stroke=False)
+            c.rect(x - 2, y - 2, bg_width, bc_height + 4, fill=True, stroke=False)
 
             # Draw Code 128 barcode using reportlab's native vector renderer
             c.setFillColorRGB(0, 0, 0)
             c.setStrokeColorRGB(0, 0, 0)
             barcode = Code128(
                 label.pack_id,
-                barWidth=0.8,
-                barHeight=30,
+                barWidth=bar_width,
+                barHeight=bar_height,
                 humanReadable=True,
-                fontSize=7,
+                fontSize=font_size,
             )
             barcode.drawOn(c, x, y)
 

@@ -40,8 +40,8 @@ class TestSimpleExample:
         assert self.result[0].page_number == 0
 
     def test_barcode_y_reasonable(self):
-        """Barcode y should be below the CP: line (~526) but above the address."""
-        assert 525 < self.result[0].barcode_y < 545
+        """Barcode y should sit just below the column's last text line."""
+        assert 560 < self.result[0].barcode_y < 720
 
     def test_barcode_x(self):
         assert self.result[0].barcode_x < 100  # left-side x
@@ -85,7 +85,7 @@ class TestStandard2Col:
 
     def test_barcode_positions(self):
         for label in self.result:
-            assert 525 < label.barcode_y < 545
+            assert 560 < label.barcode_y < 720
 
     def test_summary_page_skipped(self):
         """Page 2 is the summary page and should not appear."""
@@ -131,7 +131,7 @@ class TestMixedPackVenta:
 
     def test_barcode_y_positions(self):
         for label in self.result:
-            assert 515 < label.barcode_y < 545
+            assert 560 < label.barcode_y < 720
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +173,7 @@ class TestWithJTExpress:
     def test_barcode_y_for_jt(self):
         jt = [r for r in self.result if r.page_type == PageType.JT_EXPRESS]
         for label in jt:
-            assert 510 < label.barcode_y < 545
+            assert 540 < label.barcode_y < 720
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +223,7 @@ class TestComplexExample:
 
     def test_barcode_positions_reasonable(self):
         for label in self.result:
-            assert 510 < label.barcode_y < 545
+            assert 540 < label.barcode_y < 720
             assert 30 < label.barcode_x < 350
 
     def test_no_duplicate_labels_per_page_column(self):

@@ -2,6 +2,9 @@
 
 Extracts Pack IDs, Venta IDs, page types, and barcode placement positions
 from multi-format shipping label PDFs.
+
+Barcode is positioned just below the column's last text line so it adapts
+automatically to label height (with or without product header / encabezado).
 """
 
 from __future__ import annotations
@@ -35,25 +38,26 @@ class LabelInfo:
     page_type: PageType
     barcode_y: float      # y-coordinate for barcode (from page top, pdfplumber coords)
     barcode_x: float      # x-coordinate for barcode start
-    compact: bool = False # True when space is tight (agency labels) — use smaller barcode
+    label_index: int = 0  # sequential 1..N within a single PDF (assigned at end of parse_pdf)
+
+
+@dataclass
+class SummaryRow:
+    pack_id: str
+    page_number: int
+    y: float              # vertical position of the row (pdfplumber coords)
+    x_left: float         # left-most x of the row's content (for badge placement)
 
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-# Regex that matches Pack ID or Venta ID values.
-# Handles optional space inside the number (e.g. "20000 11633126699")
-_ID_PATTERN = re.compile(
-    r'(?:Pack\s*ID|Venta(?:\s*ID)?)\s*[:]\s*(2000[\d ]{12,16})',
-    re.IGNORECASE,
-)
-
 # Pattern to normalise IDs (remove internal spaces)
 _SPACE_STRIP = re.compile(r'\s+')
 
-# Default barcode offset below the CP: line bottom
-_BARCODE_Y_OFFSET = 4.0
+# Gap between last text line and our barcode
+_BARCODE_Y_GAP = 6.0
 
 # Default barcode x margins
 _BARCODE_X_LEFT = 42.0
@@ -190,127 +194,20 @@ def _extract_ids_with_positions(words: list[dict]) -> list[tuple[str, float, flo
     return results
 
 
-def _find_cp_line_y(words: list[dict], x_min: float, x_max: float) -> float | None:
-    """Find the y-coordinate of the CP: line in the routing section.
+def _max_content_bottom(words: list[dict], x_min: float, x_max: float) -> float | None:
+    """Return the maximum 'bottom' y-coordinate of any text within the given
+    x-range, or None if no words fall in the range.
 
-    The routing CP: line is the one in the big routing section (around y=517
-    for A4 pages), NOT the smaller "CP:XXXXX" in the address block.
-
-    We identify the routing CP: by looking for a standalone "CP:" word
-    (not merged with the postal code) in the given x-range. The routing
-    section CP: is always formatted as "CP:" followed by the postal code
-    as a separate word, while the address section has "CP:XXXXX" merged.
+    Used to position the barcode just below the last line of label content,
+    independent of whether the label has an encabezado (product header) or
+    not, and independent of label format (10x15 vs 10x20).
     """
-    candidates: list[tuple[float, float]] = []
-
-    for w in words:
-        text = w['text']
-        x0 = float(w['x0'])
-        top = float(w['top'])
-        bottom = float(w['bottom'])
-
-        if x0 < x_min or x0 > x_max:
-            continue
-
-        # Routing section CP: is a standalone "CP:" word
-        if text == 'CP:':
-            candidates.append((top, bottom))
-
-    if not candidates:
-        # Fallback: look for "CP:" at start of merged text in routing area (y > 400)
-        for w in words:
-            text = w['text']
-            x0 = float(w['x0'])
-            top = float(w['top'])
-            bottom = float(w['bottom'])
-            if x0 < x_min or x0 > x_max:
-                continue
-            if text.startswith('CP:') and top > 400:
-                candidates.append((top, bottom))
-        if not candidates:
-            return None
-
-    # The routing CP: is typically around y=517. If multiple, pick the one
-    # closest to y=517 (the standard routing section position).
-    best = min(candidates, key=lambda c: abs(c[0] - 517))
-    return best[1]  # return bottom of the CP: line
-
-
-def _find_cp_line_y_jt(words: list[dict], x_min: float, x_max: float) -> float | None:
-    """Find barcode position for J&T Express labels.
-
-    For J&T labels, the CP: line in the routing section (left side) is
-    still the best anchor, same as standard labels.
-    If the J&T label is on the right side of a 2-col page, we look for
-    CP: in the address section on the right side (merged CP:XXXXX).
-    """
-    # First try standalone CP: in column range
-    for w in words:
-        if w['text'] == 'CP:' and x_min <= float(w['x0']) <= x_max:
-            return float(w['bottom'])
-
-    # For right-side J&T, find the routing-like CP in the right column
-    # The right-side J&T labels don't have a standalone "CP:" in routing
-    # They use the address CP:XXXXX
-    candidates = []
-    for w in words:
-        text = w['text']
-        x0 = float(w['x0'])
-        top = float(w['top'])
-        bottom = float(w['bottom'])
-        if x0 < x_min or x0 > x_max:
-            continue
-        if text.startswith('CP:') and len(text) > 3:
-            candidates.append((top, bottom))
-
-    if candidates:
-        # Pick the first one (closest to top of address section)
-        return candidates[0][1]
-
-    return None
-
-
-def _has_agency_pickup(words: list[dict], x_min: float, x_max: float) -> float | None:
-    """Detect 'Comprador retira en AGENCIA MERCADO LIBRE' text in the column.
-
-    Returns the y-coordinate (top) of the agency text if found, else None.
-    This text appears around y=564 on standard labels where the buyer
-    picks up at a Mercado Libre agency.
-    """
-    for w in words:
-        text = w['text']
-        x0 = float(w['x0'])
-        top = float(w['top'])
-        if x0 < x_min or x0 > x_max:
-            continue
-        if text == 'AGENCIA' and 540 < top < 600:
-            return top
-    return None
-
-
-def _find_last_contact_line_y(words: list[dict], x_min: float, x_max: float) -> float | None:
-    """Find the bottom of the last contact info line for J&T Express labels.
-
-    J&T labels have contact info (name, address, CP, colonia, referencia)
-    typically between y=480-530. We find the bottom of the last such line
-    to place the barcode below it.
-    """
-    max_bottom = None
-    for w in words:
-        x0 = float(w['x0'])
-        top = float(w['top'])
-        bottom = float(w['bottom'])
-        text = w['text']
-        if x0 < x_min or x0 > x_max:
-            continue
-        # Contact section is typically between y=480-540 on J&T labels
-        if 480 < top < 540:
-            # Skip cut marks (single letter like "R", "C", "A")
-            if len(text) <= 1:
-                continue
-            if max_bottom is None or bottom > max_bottom:
-                max_bottom = bottom
-    return max_bottom
+    bottoms = [
+        float(w['bottom'])
+        for w in words
+        if x_min <= float(w['x0']) <= x_max
+    ]
+    return max(bottoms) if bottoms else None
 
 
 def _has_product_panel(words: list[dict]) -> bool:
@@ -397,21 +294,11 @@ def parse_pdf(pdf_path: str | Path) -> List[LabelInfo]:
             has_jt_right = _has_jt_markers(words, x_min=midpoint, x_max=page_width)
 
             if is_two_col:
-                # Two-column page - process each side
-                for nid, x0, top in left_ids:
-                    compact = False
-                    if has_jt_left:
-                        ptype = PageType.JT_EXPRESS
-                        contact_y = _find_last_contact_line_y(words, 0, midpoint)
-                        cp_y = contact_y if contact_y else _find_cp_line_y_jt(words, 0, midpoint)
-                    else:
-                        ptype = PageType.STANDARD_2COL
-                        cp_y = _find_cp_line_y(words, 0, midpoint)
-                        agency_y = _has_agency_pickup(words, 0, midpoint)
-                        if agency_y is not None:
-                            compact = True
-
-                    barcode_y = (cp_y + _BARCODE_Y_OFFSET) if cp_y else 530.0
+                # Two-column page - one label per side
+                for nid, _x0, _top in left_ids:
+                    ptype = PageType.JT_EXPRESS if has_jt_left else PageType.STANDARD_2COL
+                    content_bottom = _max_content_bottom(words, 0, midpoint)
+                    barcode_y = (content_bottom + _BARCODE_Y_GAP) if content_bottom else 530.0
                     labels.append(LabelInfo(
                         pack_id=nid,
                         page_number=page_idx,
@@ -419,28 +306,15 @@ def parse_pdf(pdf_path: str | Path) -> List[LabelInfo]:
                         page_type=ptype,
                         barcode_y=barcode_y,
                         barcode_x=_BARCODE_X_LEFT,
-                        compact=compact,
                     ))
 
-                for nid, x0, top in right_ids:
-                    # Only emit labels for IDs that are unique to the right side
-                    # (skip IDs that also appear on the left - those are from
-                    # the product strip header, not a second label)
+                for nid, _x0, _top in right_ids:
                     if nid in seen_left:
+                        # Right-side ID that's actually a product strip echo, skip
                         continue
-                    compact = False
-                    if has_jt_right:
-                        ptype = PageType.JT_EXPRESS
-                        contact_y = _find_last_contact_line_y(words, midpoint, page_width)
-                        cp_y = contact_y if contact_y else _find_cp_line_y_jt(words, midpoint, page_width)
-                    else:
-                        ptype = PageType.STANDARD_2COL
-                        cp_y = _find_cp_line_y(words, midpoint, page_width)
-                        agency_y = _has_agency_pickup(words, midpoint, page_width)
-                        if agency_y is not None:
-                            compact = True
-
-                    barcode_y = (cp_y + _BARCODE_Y_OFFSET) if cp_y else 530.0
+                    ptype = PageType.JT_EXPRESS if has_jt_right else PageType.STANDARD_2COL
+                    content_bottom = _max_content_bottom(words, midpoint, page_width)
+                    barcode_y = (content_bottom + _BARCODE_Y_GAP) if content_bottom else 530.0
                     labels.append(LabelInfo(
                         pack_id=nid,
                         page_number=page_idx,
@@ -448,31 +322,27 @@ def parse_pdf(pdf_path: str | Path) -> List[LabelInfo]:
                         page_type=ptype,
                         barcode_y=barcode_y,
                         barcode_x=_BARCODE_X_RIGHT,
-                        compact=compact,
                     ))
 
             elif has_left:
-                # Single column - either 1-col, 1-col+products, or J&T full-width
+                # Single column: 1-col, 1-col+products, J&T, or new 10x15 format
                 nid = left_ids[0][0]
-                compact = False
-
                 if has_jt_any:
                     ptype = PageType.JT_EXPRESS
-                    contact_y = _find_last_contact_line_y(words, 0, midpoint)
-                    if contact_y:
-                        cp_y_val = contact_y
-                    else:
-                        cp_y_val = _find_cp_line_y(words, 0, midpoint)
-                        if cp_y_val is None:
-                            cp_y_val = _find_cp_line_y_jt(words, 0, page_width)
                 elif has_products:
                     ptype = PageType.STANDARD_1COL_PRODUCTS
-                    cp_y_val = _find_cp_line_y(words, 0, midpoint)
                 else:
                     ptype = PageType.STANDARD_1COL
-                    cp_y_val = _find_cp_line_y(words, 0, page_width)
 
-                barcode_y = (cp_y_val + _BARCODE_Y_OFFSET) if cp_y_val else 530.0
+                # Restrict content scan to the label's column when products are
+                # in the right half — otherwise the long product list pushes
+                # the barcode way below the label area.
+                if has_products:
+                    content_bottom = _max_content_bottom(words, 0, midpoint)
+                else:
+                    content_bottom = _max_content_bottom(words, 0, page_width)
+
+                barcode_y = (content_bottom + _BARCODE_Y_GAP) if content_bottom else 530.0
                 labels.append(LabelInfo(
                     pack_id=nid,
                     page_number=page_idx,
@@ -480,15 +350,14 @@ def parse_pdf(pdf_path: str | Path) -> List[LabelInfo]:
                     page_type=ptype,
                     barcode_y=barcode_y,
                     barcode_x=_BARCODE_X_FULL,
-                    compact=compact,
                 ))
 
             elif has_right:
                 # Unusual: only right column has ID
                 nid = right_ids[0][0]
                 ptype = PageType.JT_EXPRESS if has_jt_any else PageType.STANDARD_1COL
-                cp_y_val = _find_cp_line_y(words, midpoint, page_width)
-                barcode_y = (cp_y_val + _BARCODE_Y_OFFSET) if cp_y_val else 530.0
+                content_bottom = _max_content_bottom(words, midpoint, page_width)
+                barcode_y = (content_bottom + _BARCODE_Y_GAP) if content_bottom else 530.0
                 labels.append(LabelInfo(
                     pack_id=nid,
                     page_number=page_idx,
@@ -498,4 +367,52 @@ def parse_pdf(pdf_path: str | Path) -> List[LabelInfo]:
                     barcode_x=_BARCODE_X_RIGHT,
                 ))
 
+    # Assign sequential per-PDF index (1..N)
+    for i, label in enumerate(labels, start=1):
+        label.label_index = i
+
     return labels
+
+
+# ---------------------------------------------------------------------------
+# Summary page parsing — for matching label numbers to summary rows
+# ---------------------------------------------------------------------------
+
+def parse_summary_rows(pdf_path: str | Path) -> List[SummaryRow]:
+    """Locate Pack/Venta IDs on summary pages and return their row positions.
+
+    Used to draw operator-friendly numeric badges next to each row on the
+    summary so the printed label number matches the surtido checklist.
+    """
+    pdf_path = Path(pdf_path)
+    rows: list[SummaryRow] = []
+
+    with pdfplumber.open(pdf_path) as pdf:
+        for page_idx, page in enumerate(pdf.pages):
+            words = page.extract_words()
+            if not _is_summary_page(words):
+                continue
+
+            # On summary pages, Pack IDs appear as 16-digit numbers prefixed
+            # by "Pack ID:" (or merged "ID:200001..."). The row's leftmost
+            # text is typically the "Identificación" hash code at x≈30-60.
+            for w in words:
+                text = w['text']
+                x0 = float(w['x0'])
+                top = float(w['top'])
+
+                m = re.match(r'(?:Pack\s*ID:|Venta:|ID:)?\s*(2000\d{12,16})$', text)
+                if not m:
+                    continue
+                nid = _normalise_id(m.group(1))
+                if len(nid) < 16:
+                    continue
+                # Skip IDs that don't start with 2000 (already enforced by regex)
+                rows.append(SummaryRow(
+                    pack_id=nid,
+                    page_number=page_idx,
+                    y=top,
+                    x_left=x0,
+                ))
+
+    return rows

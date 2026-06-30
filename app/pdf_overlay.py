@@ -14,7 +14,23 @@ _BAR_HEIGHT = 22
 _BAR_WIDTH = 0.65
 _FONT_SIZE = 6
 _BARCODE_BLOCK_HEIGHT = 32  # bar_height + space for the human-readable digits
-_BARCODE_BG_WIDTH = 175
+
+# Mercado Libre's 2026 redesign extended the label content further down the
+# page, which pushed the content-anchored barcode off the bottom of the
+# printable area. Lift the barcode so it stays visible and scannable
+# (operator request, Jun 2026): 1 cm up, then 2 mm back down per print tuning
+# → net 8 mm. Other (older) formats keep ample room below their content, so the
+# same lift leaves them well within the page.
+_BARCODE_UP_SHIFT = 8.0 * 72.0 / 25.4  # 8 mm ≈ 22.68 pt
+
+# White backing behind the barcode. Kept as tight as possible so it overlaps the
+# recipient address (which now reaches the bottom of the label) as little as
+# possible while still giving the bars a clean white field. Code128.width
+# already includes the quiet zones a scanner needs, so the box width is taken
+# from the barcode itself; vertically we cover the bars plus the descender of
+# the human-readable digits, which sit ~4-5 pt below the barcode origin.
+_BG_DIGITS_DESCENT = 5.0  # how far the human-readable digits drop below origin y
+_BG_PAD = 1.0             # hairline margin around the barcode ink
 
 # Sequential number badge (top-right of label area).
 _BADGE_RADIUS = 13           # ~9 mm circle — visible at arm's length
@@ -110,16 +126,10 @@ def add_barcodes_to_pdf(pdf_path: str, labels: list[LabelInfo]) -> bytes:
         # --- Label pages: barcode + number badge ---
         for label in labels_by_page.get(page_idx, []):
             x = label.barcode_x
-            # pdfplumber y (origin top) → reportlab y (origin bottom)
-            y = ph - label.barcode_y - _BARCODE_BLOCK_HEIGHT
+            # pdfplumber y (origin top) → reportlab y (origin bottom), lifted by
+            # _BARCODE_UP_SHIFT to keep it on the (taller) 2026 ML label format.
+            y = ph - label.barcode_y - _BARCODE_BLOCK_HEIGHT + _BARCODE_UP_SHIFT
 
-            # White wash so the printed barcode reads cleanly
-            c.setFillColorRGB(1, 1, 1)
-            c.rect(x - 2, y - 2, _BARCODE_BG_WIDTH, _BARCODE_BLOCK_HEIGHT + 4,
-                   fill=True, stroke=False)
-
-            c.setFillColorRGB(0, 0, 0)
-            c.setStrokeColorRGB(0, 0, 0)
             barcode = Code128(
                 label.pack_id,
                 barWidth=_BAR_WIDTH,
@@ -127,6 +137,21 @@ def add_barcodes_to_pdf(pdf_path: str, labels: list[LabelInfo]) -> bytes:
                 humanReadable=True,
                 fontSize=_FONT_SIZE,
             )
+
+            # Minimal white backing hugging the barcode footprint so it covers as
+            # little of the address behind it as possible (see _BG_* notes above).
+            c.setFillColorRGB(1, 1, 1)
+            c.rect(
+                x - _BG_PAD,
+                y - _BG_DIGITS_DESCENT - _BG_PAD,
+                barcode.width + 2 * _BG_PAD,
+                _BAR_HEIGHT + _BG_DIGITS_DESCENT + 2 * _BG_PAD,
+                fill=True,
+                stroke=False,
+            )
+
+            c.setFillColorRGB(0, 0, 0)
+            c.setStrokeColorRGB(0, 0, 0)
             barcode.drawOn(c, x, y)
 
             cx, cy = _badge_center_for_label(label, pw, ph)
